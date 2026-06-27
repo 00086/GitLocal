@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Commit {{ commit.hexsha[:7] }} - GitLocal</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/vs2015.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+
+    <style>
+        .diff-container { background-color: #ffffff; overflow-x: auto; font-size: 14px; border-bottom-left-radius: 6px; border-bottom-right-radius: 6px;}
+        .diff-line { font-family: 'Consolas', 'Courier New', monospace; white-space: pre-wrap; margin: 0; padding: 2px 10px; }
+        .diff-add { background-color: #e6ffec; color: #1a7f37; }       
+        .diff-remove { background-color: #ffebe9; color: #cf222e; }    
+        .diff-header { background-color: #ddf4ff; color: #0969da; }    
+        
+        /* 🌟 新增：覆寫 highlight.js 預設樣式，讓它融入我們的紅綠背景，並排版符號 */
+        .diff-line code.hljs {
+            background: transparent !important;
+            padding: 0 !important;
+            color: inherit; /* 讓未被高亮的文字保持紅色/綠色 */
+            white-space: pre-wrap;
+        }
+        .diff-marker {
+            width: 25px;
+            flex-shrink: 0;
+            display: inline-block;
+            user-select: none; /* 防止複製程式碼時不小心拷貝到 + 和 - 符號 */
+            opacity: 0.6;
+        }
+		
+		/* 🌟 全局鎖定外層捲動，並套用 Flexbox */
+        html, body { height: 100vh; overflow: hidden !important; margin: 0; }
+        body.container { display: flex; flex-direction: column; max-width: 100%; padding-top: 1rem; padding-bottom: 1rem; }
+        
+        /* 確保上方資訊區不被擠壓 */
+        nav, .commit-info-block { flex-shrink: 0; }
+
+        /* 差異卡片填滿剩餘空間 */
+        .card { flex: 1; display: flex; flex-direction: column; min-height: 0; margin-bottom: 0; }
+        .card-header { flex-shrink: 0; }
+        
+        /* 只有實際的程式碼差異區塊可以內部捲動 */
+        .diff-container { flex: 1; overflow-y: auto; }
+    </style>
+</head>
+<body class="container mt-5 mb-5">
+	<div class="commit-info-block">
+		<nav aria-label="breadcrumb">
+			<ol class="breadcrumb fs-5">
+				<li class="breadcrumb-item"><a href="/" class="text-decoration-none">首頁</a></li>
+				<li class="breadcrumb-item"><a href="/repo/{{ repo_name }}" class="text-decoration-none">{{ repo_name }}</a></li>
+				<li class="breadcrumb-item active fw-bold">Commit 詳細紀錄</li>
+			</ol>
+		</nav>
+		
+		<div class="mb-4">
+			{% set msg_parts = commit.message.split('\n', 1) %}
+			
+			<h3 class="fw-bold mb-2">{{ msg_parts[0] }}</h3>
+			
+			{% if msg_parts|length > 1 and msg_parts[1].strip() %}
+				<div class="alert alert-light border text-secondary py-2 px-3 mt-2 mb-3 shadow-sm" style="white-space: pre-wrap; font-size: 1rem; line-height: 1.5;">{{ msg_parts[1].strip() }}</div>
+			{% endif %}
+
+			<div class="text-muted">
+				<span class="fw-bold text-dark">{{ commit.author.name }}</span> 
+				於 {{ commit.time }} 提交了這個變更
+				<span class="ms-3 font-monospace bg-light border px-2 py-1 rounded">{{ commit.hexsha }}</span>
+			</div>
+		</div>
+	</div>
+
+    <div class="card border border-secondary border-opacity-25 shadow-sm">
+        <div class="card-header bg-light fw-bold py-2">
+            📄 程式碼變更差異 (Diff)
+        </div>
+        <div class="card-body p-0 diff-container pb-3">
+            {% if diffs and diffs != "這是首次提交 (Initial Commit)，沒有變更差異。" %}
+                
+                {% set file_info = namespace(ext='plaintext') %}
+                
+                {% for line in diffs.split('\n') %}
+                    {% if line.startswith('+++ b/') %}
+                        {% set filepath = line[6:] %}
+                        {% set file_info.ext = filepath.split('.')[-1]|lower if '.' in filepath else 'plaintext' %}
+                        
+                        <div class="d-flex justify-content-between align-items-center bg-dark text-white px-3 py-2 mt-4 shadow-sm border-top border-secondary">
+                            <span class="fw-bold font-monospace" style="font-size: 15px;">📄 {{ filepath }}</span>
+                            <a href="/repo/{{ repo_name }}/download/{{ commit.hexsha }}/{{ filepath }}" class="btn btn-sm btn-success fw-bold">
+                                ⬇️ 下載此版本
+                            </a>
+                        </div>
+                    
+                    {% elif "Binary files" in line %}
+                        <div class="p-4 text-center text-secondary bg-light border-top border-bottom my-2">
+                            📦 <strong>這是一個二進位檔案 (如 Word, Excel, PPT 或圖片)</strong><br>
+                            系統已為您完美備份此版本，但無法在網頁上預覽內容差異。<br>
+                            請點擊右上方的 <strong class="text-success">「⬇️ 下載此版本」</strong> 至您的電腦中開啟查看。
+                        </div>
+
+                    {% elif line.startswith('+') and not line.startswith('+++') %}
+                        <div class="diff-line diff-add d-flex"><span class="diff-marker fw-bold">+</span><code class="language-{{ file_info.ext }} flex-grow-1">{{ line[1:] }}</code></div>
+                    
+                    {% elif line.startswith('-') and not line.startswith('---') %}
+                        <div class="diff-line diff-remove d-flex"><span class="diff-marker fw-bold">-</span><code class="language-{{ file_info.ext }} flex-grow-1">{{ line[1:] }}</code></div>
+                    
+                    {% elif line.startswith('@@') %}
+                        <div class="diff-line diff-header mt-1 fw-bold">{{ line }}</div>
+                    
+                    {% elif not line.startswith('---') and not line.startswith('+++') %}
+                        <div class="diff-line text-muted d-flex"><span class="diff-marker">&nbsp;</span><code class="language-{{ file_info.ext }} flex-grow-1">{{ line[1:] if line.startswith(' ') else line }}</code></div>
+                    {% endif %}
+                {% endfor %}
+            {% else %}
+                <div class="p-4 text-center text-muted">
+                    這個 Commit 沒有文字檔案的變更（可能是空資料夾、二進位圖片檔，或為首次提交）。
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+	<script>
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('code').forEach((el) => {
+                hljs.highlightElement(el);
+            });
+        });
+    </script>
+</body>
+</html>
