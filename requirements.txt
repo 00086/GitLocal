@@ -1,0 +1,18 @@
+# Web 框架與路由處理
+Flask>=3.0.0
+
+# 純 Python/Rust 實作的 Git 操作核心庫
+dulwich>=0.21.7
+
+# Windows/跨平台的高效能 WSGI 伺服器
+waitress>=3.0.0
+
+#虛擬環境安裝
+#python -m venv venv
+#第一種執行方式
+#venv\Scripts\activate
+#python app.py
+#第二種執行方式
+#venv\Scripts\python.exe app.py
+#一行安裝
+#venv\Scripts\pip install Flask dulwich waitress
