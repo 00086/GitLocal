@@ -3,6 +3,7 @@ import sys
 import argparse
 import hashlib
 import requests
+import fnmatch  # 🌟 新增：用於解析 .gitignore 語法
 
 def get_server_url():
     """動態取得伺服器 URL"""
@@ -19,6 +20,34 @@ def get_server_url():
     print("💡 建議做法：在當前資料夾建立一個名為 '.gitlocal' 的純文字檔，寫入伺服器網址 (例如 http://192.168.1.100:5001)。")
     print("🔌 系統將暫時退回預設值：http://127.0.0.1:5001\n")
     return "http://127.0.0.1:5001"
+
+# ==========================================
+# 🌟 SmartIgnore (.gitignore 解析引擎)
+# ==========================================
+class SmartIgnore:
+    def __init__(self, root_dir):
+        self.root_dir = root_dir
+        self.patterns = ['.git', '.gitlocal', 'gitlocal.py', 'gitlocal.bat', 'gitlocal.exe', '__pycache__', 'my_git_repos', 'venv', 'env']
+        self._load()
+
+    def _load(self):
+        path = os.path.join(self.root_dir, '.gitignore')
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        self.patterns.append(line.strip('/'))
+
+    def is_ignored(self, rel_path):
+        rel_path = rel_path.replace('\\', '/')
+        parts = rel_path.split('/')
+        for pattern in self.patterns:
+            if pattern in parts: return True
+            for part in parts:
+                if fnmatch.fnmatch(part, pattern): return True
+            if fnmatch.fnmatch(rel_path, pattern): return True
+        return False
 
 SERVER_URL = get_server_url()
 
@@ -57,7 +86,7 @@ def simple_post(url, data, success_msg, loading_msg="⏳ 執行中..."):
 # 核心指令執行區塊
 # ==========================================
 def command_status(repo_name, work_dir):
-    """🌟 優化版：以伺服器清單為基準，避免無謂讀取本地未上傳檔案"""
+    """🌟 優化版：以伺服器清單為基準，並套用本地 SmartIgnore 過濾"""
     abs_work_dir = os.path.abspath(work_dir)
     print(f"🔍 正在與伺服器比對 [{repo_name}] 的檔案狀態...")
     print(f"📂 當前掃描之本地目錄: {abs_work_dir}")
@@ -67,33 +96,34 @@ def command_status(repo_name, work_dir):
     modified_files = []
     local_tracked_files = set()
     
-    ignore_dirs = {'.git', '__pycache__', 'my_git_repos', 'venv', 'env', '.vscode', '.idea', 'node_modules'}
+    # 🌟 初始化智慧過濾器
+    ignorer = SmartIgnore(work_dir)
     
     # 掃描本地目錄結構
     for root, dirs, files in os.walk(work_dir):
-        dirs[:] = [d for d in dirs if d not in ignore_dirs]
+        # 🌟 在源頭剪除被忽略的目錄，停止往下掃描
+        dirs[:] = [d for d in dirs if not ignorer.is_ignored(os.path.relpath(os.path.join(root, d), work_dir))]
+        
         for f in files:
             full_p = os.path.join(root, f)
             rel_p = os.path.relpath(full_p, work_dir).replace('\\', '/')
             
-            # 忽略工具本身的檔案
-            if rel_p in ['gitlocal.py', '.gitlocal', 'gitlocal.bat'] and rel_p not in server_manifest:
+            # 🌟 單一檔案級別過濾 (命中 .gitignore 則跳過)
+            if ignorer.is_ignored(rel_p):
                 continue 
                 
             local_tracked_files.add(rel_p)
             
-            # 🌟 核心優比對邏輯 (由伺服器清單主導)
+            # 核心比對邏輯
             if rel_p not in server_manifest:
-                # 1. 伺服器沒有這個路徑 -> 肯定是新檔案，直接記錄，完全不讀取/不計算 Hash！
                 new_files.append(rel_p)
             else:
-                # 2. 伺服器有這個路徑 -> 只有這時候才需要算 Hash 比對內容是否有修改！
                 if get_local_hash(full_p) != server_manifest[rel_p]:
                     modified_files.append(rel_p)
             
-    # 3. 檢查遠端有、但本地沒被掃描到的檔案 -> 已刪除檔案
-    deleted_files = [rel_p for rel_p in server_manifest.keys() if rel_p not in local_tracked_files]
-            
+    # 🌟 修正：檢查遠端有、但本地沒被掃描到的檔案 (且必須不在忽略名單內) -> 才是真正已刪除檔案
+    deleted_files = [rel_p for rel_p in server_manifest.keys() if rel_p not in local_tracked_files and not ignorer.is_ignored(rel_p)]
+
     # 美化輸出結果
     if not new_files and not modified_files and not deleted_files:
         print("✅ 工作目錄非常乾淨！與遠端伺服器 100% 完全同步。")
@@ -120,25 +150,26 @@ def command_commit(repo_name, message, targets, work_dir):
     server_manifest = get_server_manifest(repo_name)
     files_to_upload = []
     
-    ignore_dirs = {'.git', '__pycache__', 'my_git_repos', 'venv', 'env', '.vscode', '.idea', 'node_modules'}
+    ignorer = SmartIgnore(work_dir) # 🌟 初始化智慧過濾器
     
     for target in targets:
         if target == '.':
             for root, dirs, files in os.walk(work_dir):
-                dirs[:] = [d for d in dirs if d not in ignore_dirs]
+                # 🌟 在源頭剪除被忽略的目錄
+                dirs[:] = [d for d in dirs if not ignorer.is_ignored(os.path.relpath(os.path.join(root, d), work_dir))]
+                
                 for f in files:
                     full_p = os.path.join(root, f)
                     rel_p = os.path.relpath(full_p, work_dir).replace('\\', '/')
                     
-                    if rel_p in ['gitlocal.py', '.gitlocal', 'gitlocal.bat'] and rel_p not in server_manifest:
+                    # 🌟 單一檔案級別過濾
+                    if ignorer.is_ignored(rel_p):
                         continue 
                     
-                    # 🌟 智慧過濾比對
+                    # 智慧過濾比對
                     if rel_p not in server_manifest:
-                        # 新檔案註定要上傳，無需浪費 CPU 算 Hash 來比對
                         files_to_upload.append(rel_p)
                     else:
-                        # 既有檔案，才需要算 Hash 確認是否有被修改過
                         if get_local_hash(full_p) != server_manifest[rel_p]:
                             files_to_upload.append(rel_p)
         else:
@@ -146,6 +177,7 @@ def command_commit(repo_name, message, targets, work_dir):
             target_full = os.path.join(work_dir, target)
             if os.path.isfile(target_full):
                 rel_p = os.path.relpath(target_full, work_dir).replace('\\', '/')
+                # 如果使用者明確指定單一檔案，通常允許繞過 .gitignore，但可視需求加入 ignorer.is_ignored(rel_p) 判斷
                 if rel_p not in server_manifest:
                     files_to_upload.append(rel_p)
                 else:

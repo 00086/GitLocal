@@ -2,7 +2,7 @@ import os
 import time
 import datetime
 import re
-import threading  # 🌟 確保 Waitress 多線程進來時，Git 寫入安全排隊
+import threading
 from dulwich.repo import Repo
 from dulwich.patch import write_tree_diff
 from io import BytesIO
@@ -12,14 +12,53 @@ import zipfile
 import shutil
 from dulwich.objects import Commit
 import hashlib
+import fnmatch  # 🌟 新增：用於解析 .gitignore 語法
 
 REPOS_DIR = os.path.abspath("./my_git_repos")
 
-# 🌟 全域 Git 互斥鎖，阻絕多線程同時寫入造成的 index.lock 崩潰
+# 🌟 全域 Git 互斥鎖
 git_lock = threading.Lock()
 
-# 🌟 核心防禦：自動化建立主資料夾，exist_ok=True 確保跨平台與多線程安全
 os.makedirs(REPOS_DIR, exist_ok=True)
+
+# ==========================================
+# 🌟 LFS (Large File Storage) 核心引擎
+# ==========================================
+LFS_DIR = os.path.abspath("./my_git_repos/.lfs_objects")
+os.makedirs(LFS_DIR, exist_ok=True)
+LFS_THRESHOLD = 5 * 1024 * 1024  # 檔案大於 5MB 時自動觸發 LFS 機制
+
+def _create_lfs_pointer(file_bytes):
+    """判斷檔案大小，若超過閾值則轉為 LFS 指標，真實檔案存入獨立的物件資料夾"""
+    if len(file_bytes) < LFS_THRESHOLD:
+        return file_bytes
+    
+    sha256_hash = hashlib.sha256(file_bytes).hexdigest()
+    size = len(file_bytes)
+    # 遵循官方 Git-LFS 指標格式
+    pointer = f"version https://git-lfs.github.com/spec/v1\noid sha256:{sha256_hash}\nsize {size}\n"
+    
+    lfs_file_path = os.path.join(LFS_DIR, sha256_hash)
+    if not os.path.exists(lfs_file_path):
+        with open(lfs_file_path, 'wb') as f:
+            f.write(file_bytes)
+            
+    return pointer.encode('utf-8')
+
+def _resolve_lfs_pointer(file_bytes):
+    """讀取時若發現為 LFS 指標，則從獨立的物件資料夾還原真實二進位檔案"""
+    try:
+        if file_bytes.startswith(b"version https://git-lfs.github.com/spec/v1"):
+            lines = file_bytes.decode('utf-8').split('\n')
+            oid_line = next(line for line in lines if line.startswith('oid sha256:'))
+            sha256_hash = oid_line.split(':')[1].strip()
+            lfs_file_path = os.path.join(LFS_DIR, sha256_hash)
+            if os.path.exists(lfs_file_path):
+                with open(lfs_file_path, 'rb') as f:
+                    return f.read()
+    except Exception:
+        pass
+    return file_bytes
 
 def get_all_repositories():
     repos = []
@@ -206,8 +245,11 @@ def get_file_content(repo_name, file_path):
     path = get_repo_path(repo_name)
     full_path = os.path.join(path, file_path)
     if os.path.exists(full_path):
-        with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
-            return f.read()
+        # 🌟 修正：先以二進位讀取，解析 LFS 指標後再解碼為文字
+        with open(full_path, 'rb') as f:
+            raw_bytes = f.read()
+        resolved_bytes = _resolve_lfs_pointer(raw_bytes)
+        return resolved_bytes.decode('utf-8', errors='replace')
     return ""
 
 def write_and_commit(repo_name, file_path, content, message):
@@ -218,8 +260,12 @@ def write_and_commit(repo_name, file_path, content, message):
         full_path = os.path.join(repo_dir, clean_p)
 
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        with open(full_path, 'w', encoding='utf-8', newline='') as f:
-            f.write(content)
+        # 🌟 攔截：將文字轉為 bytes 並經過 LFS 引擎檢查
+        file_bytes = content.encode('utf-8')
+        processed_bytes = _create_lfs_pointer(file_bytes)
+        
+        with open(full_path, 'wb') as f:
+            f.write(processed_bytes)
 
         porcelain.add(repo_dir, paths=[clean_p])
         porcelain.commit(repo_dir, message=message.encode('utf-8'), author=b"Web User <web@local.git>")
@@ -250,8 +296,12 @@ def upload_and_commit(repo_name, file_path, file_bytes, message):
         full_path = os.path.join(repo_dir, clean_p)
 
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        
+        # 🌟 攔截：檢查是否需要轉為 LFS 指標
+        processed_bytes = _create_lfs_pointer(file_bytes)
+        
         with open(full_path, 'wb') as f:
-            f.write(file_bytes)
+            f.write(processed_bytes)
 
         porcelain.add(repo_dir, paths=[clean_p])
         porcelain.commit(repo_dir, message=message.encode('utf-8'), author=b"Web User <web@local.git>")
@@ -263,9 +313,6 @@ def cleanup_lock_files(repo_dir):
         except Exception: pass
         
 def batch_upload_and_commit(repo_name, file_data_list, message):
-    """
-    file_data_list: 一個列表，格式為 [{'path': 'file1.txt', 'bytes': b'...'}, {'path': 'file2.txt', 'bytes': b'...'}]
-    """
     with git_lock:
         repo_dir = get_repo_path(repo_name)
         cleanup_lock_files(repo_dir)
@@ -275,13 +322,15 @@ def batch_upload_and_commit(repo_name, file_data_list, message):
             clean_p = _clean_path(item['path'])
             full_path = os.path.join(repo_dir, clean_p)
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            
+            # 🌟 攔截：檢查是否需要轉為 LFS 指標
+            processed_bytes = _create_lfs_pointer(item['bytes'])
+            
             with open(full_path, 'wb') as f:
-                f.write(item['bytes'])
+                f.write(processed_bytes)
             all_paths.append(clean_p)
 
-        # 批次 add
         porcelain.add(repo_dir, paths=all_paths)
-        # 一次 commit
         porcelain.commit(repo_dir, message=message.encode('utf-8'), author=b"Web User <web@local.git>")
 
 # --- 🌟 新增：獲取特定 Commit 版本的檔案內容 ---
@@ -298,21 +347,19 @@ def get_file_at_commit(repo_name, commit_sha, file_path):
         
     try:
         commit = repo[sha_bytes]
-        # 遍歷該 Commit 當時的目錄樹
         for item_path, mode, sha in repo.object_store.iter_tree_contents(commit.tree):
             clean_item_path = _clean_path(item_path)
             clean_target_path = _clean_path(file_path)
             
             if clean_item_path == clean_target_path:
-                # 找到了！回傳該檔案的原始二進位資料
-                return repo[sha].data
+                # 🌟 攔截：若是 LFS 指標則還原為真實資料
+                return _resolve_lfs_pointer(repo[sha].data)
     except Exception as e:
         print(f"❌ 讀取歷史檔案失敗: {e}")
         
     return None
     
 def get_commit_zip(repo_name, commit_sha):
-    """將特定 Commit 的完整專案目錄樹打包為 ZIP 並回傳 BytesIO"""
     path = get_repo_path(repo_name)
     if not os.path.exists(path):
         return None
@@ -327,16 +374,14 @@ def get_commit_zip(repo_name, commit_sha):
         commit = repo[sha_bytes]
         memory_zip = BytesIO()
         
-        # 建立 ZIP 檔案，使用 ZIP_DEFLATED 進行壓縮
         with zipfile.ZipFile(memory_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
-            # iter_tree_contents 可以抓出當時整個專案所有的檔案
             for item_path, mode, sha in repo.object_store.iter_tree_contents(commit.tree):
                 clean_path = _clean_path(item_path)
-                file_data = repo[sha].data
-                # 將檔案寫入 ZIP 中
+                # 🌟 攔截：將 LFS 指標還原為真實資料再封裝進 ZIP
+                file_data = _resolve_lfs_pointer(repo[sha].data)
                 zf.writestr(clean_path, file_data)
                 
-        memory_zip.seek(0) # 將指標移回開頭以供讀取
+        memory_zip.seek(0)
         return memory_zip
     except Exception as e:
         print(f"❌ 打包 ZIP 失敗: {e}")
@@ -567,26 +612,62 @@ def merge_branch(repo_name, source_branch):
         cleanup_lock_files(path)
         porcelain.reset(repo, "hard", "HEAD")
 
-# --- 🌟 新增：給 CLI 客戶端專用的 API 引擎 ---
+# ==========================================
+# 🌟 SmartIgnore (.gitignore 解析引擎)
+# ==========================================
+class SmartIgnore:
+    def __init__(self, root_dir):
+        self.root_dir = root_dir
+        # 預設保護核心工具與環境資料夾
+        self.patterns = ['.git', '.gitlocal', 'gitlocal.py', 'gitlocal.bat', 'gitlocal.exe', '__pycache__', 'my_git_repos', 'venv', 'env']
+        self._load()
+
+    def _load(self):
+        path = os.path.join(self.root_dir, '.gitignore')
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        self.patterns.append(line.strip('/'))
+
+    def is_ignored(self, rel_path):
+        rel_path = rel_path.replace('\\', '/')
+        parts = rel_path.split('/')
+        for pattern in self.patterns:
+            # 完整目錄層級比對
+            if pattern in parts: return True
+            # 單一節點萬用字元比對 (例如 *.log)
+            for part in parts:
+                if fnmatch.fnmatch(part, pattern): return True
+            # 全路徑萬用字元比對
+            if fnmatch.fnmatch(rel_path, pattern): return True
+        return False
+
+# --- CLI 客戶端專用的 API 引擎 ---
 def get_repo_manifest(repo_name):
-    """計算並回傳伺服器端該專案所有檔案的 SHA-1 Hash 清單"""
+    """計算並回傳伺服器端該專案所有檔案的 SHA-1 Hash 清單 (已套用 SmartIgnore)"""
     path = get_repo_path(repo_name)
     manifest = {}
     
     if not os.path.exists(path):
         return manifest
         
+    ignorer = SmartIgnore(path)
+        
     for root, dirs, files in os.walk(path):
-        # 忽略 Git 底層資料夾
-        if '.git' in dirs:
-            dirs.remove('.git')
+        # 🌟 攔截：在源頭直接剔除需忽略的目錄，大幅節省目錄遍歷的系統開銷
+        dirs[:] = [d for d in dirs if not ignorer.is_ignored(os.path.relpath(os.path.join(root, d), path))]
             
         for f in files:
             full_p = os.path.join(root, f)
-            # 取得相對路徑 (統一使用正斜線)
             rel_p = os.path.relpath(full_p, path).replace('\\', '/')
             
-            # 計算檔案的 SHA-1 Hash
+            # 🌟 攔截：單一檔案過濾
+            if ignorer.is_ignored(rel_p):
+                continue
+            
+            # 針對 LFS 與標準檔案計算 Hash
             sha1 = hashlib.sha1()
             with open(full_p, 'rb') as fp:
                 sha1.update(fp.read())
