@@ -3,9 +3,6 @@
 <head>
     <title>編輯 {{ file_path }} - {{ repo_name }}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/theme/monokai.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.2.0/github-markdown-light.min.css">
 
     <style>
@@ -22,8 +19,11 @@
         /* 讓編輯器與預覽的「容器」佔滿表單的彈性空間 */
         #editor-container, #preview-container, #image-container { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-bottom: 1rem; }
 
-        /* 🌟 CodeMirror 編輯器設定：高度 100%，由內部自己產生捲軸 */
-        .CodeMirror { flex: 1; height: 100% !important; border-radius: 6px; font-size: 15px; font-family: 'Consolas', 'Courier New', monospace; box-shadow: 0 .125rem .25rem rgba(0,0,0,.075); transition: font-size 0.2s; }
+        /* 🌟 CodeMirror 6 & Monaco 編輯器外層統一樣式設定 */
+        .cm-editor, .monaco-pane-wrapper { flex: 1; height: 100% !important; border: 1px solid #dee2e6; border-radius: 6px; font-size: 15px; box-shadow: 0 .125rem .25rem rgba(0,0,0,.075); overflow: hidden; }
+        
+        /* CodeMirror 6 內部滾動調整 */
+        .cm-scroller { font-family: 'Consolas', 'Courier New', monospace !important; }
         
         /* 🌟 Markdown 預覽區塊：高度 100%，內部捲動 */
         #preview-pane { flex: 1; height: 100%; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 6px; padding: 30px; background-color: #ffffff; }
@@ -37,6 +37,8 @@
     </style>
 </head>
 <body class="container bg-light">
+    <textarea id="raw-content-template" style="display:none;">{{ content }}</textarea>
+
     <nav aria-label="breadcrumb" class="mb-3">
         <ol class="breadcrumb fs-5 mb-0">
             <li class="breadcrumb-item"><a href="/" class="text-decoration-none">首頁</a></li>
@@ -49,26 +51,32 @@
         <h3 class="mb-0 fw-bold">📄 檔案編輯器</h3>
         
         <div class="d-flex gap-2">
+            <div id="engine-toggles" class="btn-group shadow-sm" role="group">
+                <input type="radio" class="btn-check" name="engineradio" id="btn-cm6" checked onclick="window.switchEngine('codemirror')">
+                <label class="btn btn-outline-dark fw-bold" for="btn-cm6">⚡ CodeMirror 6</label>
+
+                <input type="radio" class="btn-check" name="engineradio" id="btn-monaco" onclick="window.switchEngine('monaco')">
+                <label class="btn btn-outline-dark fw-bold" for="btn-monaco">👑 Monaco</label>
+            </div>
+
             <div class="btn-group shadow-sm" id="font-controls">
-                <button type="button" class="btn btn-outline-secondary fw-bold px-3" onclick="changeFontSize(1)" title="放大字體">A+</button>
-                <button type="button" class="btn btn-outline-secondary fw-bold px-3" onclick="changeFontSize(-1)" title="縮小字體">A-</button>
-                <button type="button" class="btn btn-outline-secondary fw-bold px-3" onclick="changeFontSize(0)" title="重設字體">↺</button>
+                <button type="button" class="btn btn-outline-secondary fw-bold px-3" onclick="window.changeFontSize(1)" title="放大字體">A+</button>
+                <button type="button" class="btn btn-outline-secondary fw-bold px-3" onclick="window.changeFontSize(-1)" title="縮小字體">A-</button>
+                <button type="button" class="btn btn-outline-secondary fw-bold px-3" onclick="window.changeFontSize(0)" title="重設字體">↺</button>
             </div>
 
             <div id="view-toggles" class="d-none btn-group shadow-sm" role="group">
-                <input type="radio" class="btn-check" name="btnradio" id="btn-edit" checked onchange="toggleView('edit')">
+                <input type="radio" class="btn-check" name="btnradio" id="btn-edit" checked onchange="window.toggleView('edit')">
                 <label class="btn btn-outline-primary fw-bold" for="btn-edit">📝 編輯</label>
 
-                <input type="radio" class="btn-check" name="btnradio" id="btn-preview" onchange="toggleView('preview')">
+                <input type="radio" class="btn-check" name="btnradio" id="btn-preview" onchange="window.toggleView('preview')">
                 <label class="btn btn-outline-primary fw-bold" for="btn-preview">👁️ 預覽</label>
             </div>
         </div>
     </div>
 
-    <form action="/repo/{{ repo_name }}/file/{{ file_path }}" method="POST" id="edit-form" onsubmit="combineMessage(event)">
-        <div id="editor-container">
-            <textarea id="code-editor" name="content">{{ content }}</textarea>
-        </div>
+    <form action="/repo/{{ repo_name }}/file/{{ file_path }}" method="POST" id="edit-form" onsubmit="window.combineMessage(event)">
+        <div id="editor-container"></div>
         
         <div id="preview-container" class="d-none">
             <div id="preview-pane" class="markdown-body shadow-sm"></div>
@@ -89,19 +97,28 @@
                     <button type="submit" class="btn btn-primary w-100 fw-bold shadow-sm">💾 儲存並 Commit</button>
                 </div>
             </div>
+            <input type="hidden" name="content" id="hidden_content">
             <input type="hidden" name="message" id="real_message">
         </div>
     </form>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/markdown/markdown.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/python/python.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/javascript/javascript.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/xml/xml.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/css/css.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
 
-    <script>
+    <script type="module">
+        import { basicSetup } from 'https://esm.sh/codemirror';
+        import { EditorView } from 'https://esm.sh/@codemirror/view';
+        import { EditorState } from 'https://esm.sh/@codemirror/state';
+        import { oneDark } from 'https://esm.sh/@codemirror/theme-one-dark';
+        
+        // 載入常用的 CodeMirror 6 語言套件
+        import { python } from 'https://esm.sh/@codemirror/lang-python';
+        import { javascript } from 'https://esm.sh/@codemirror/lang-javascript';
+        import { html } from 'https://esm.sh/@codemirror/lang-html';
+        import { css } from 'https://esm.sh/@codemirror/lang-css';
+        import { markdown } from 'https://esm.sh/@codemirror/lang-markdown';
+        import { json } from 'https://esm.sh/@codemirror/lang-json';
+
         const filePath = "{{ file_path }}";
         const repoName = "{{ repo_name }}";
         const ext = filePath.split('.').pop().toLowerCase();
@@ -112,78 +129,191 @@
         const actionBar = document.getElementById('action-bar');
         const viewToggles = document.getElementById('view-toggles');
         const fontControls = document.getElementById('font-controls');
-        
-        let editor;
+        const engineToggles = document.getElementById('engine-toggles');
+
+        // 全域狀態管理
+        let currentEngine = 'codemirror'; // 'codemirror' 或 'monaco'
+        let currentCode = document.getElementById('raw-content-template').value;
+        let currentFontSize = 15;
+
+        // 編輯器實例指標
+        let cm6View = null;
+        let monacoInstance = null;
 
         const imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico'];
-        
+
+        // --- 核心防禦：如果是圖片，攔截並轉入圖片檢視模式 ---
         if (imageExtensions.includes(ext)) {
             editorContainer.classList.add('d-none');
-            fontControls.classList.add('d-none'); // 圖片模式不顯示字體控制鈕
+            fontControls.classList.add('d-none');
+            engineToggles.classList.add('d-none');
             actionBar.classList.add('d-none');
             imageContainer.classList.remove('d-none');
             document.getElementById('image-viewer').src = `/repo/${repoName}/raw/${filePath}`;
         } else {
-            editor = CodeMirror.fromTextArea(document.getElementById("code-editor"), {
-                lineNumbers: true,
-                theme: "monokai",
-                mode: getMode(ext),
-                lineWrapping: true,
-                tabSize: 4,
-                indentUnit: 4
-            });
-
+            // 預設初始化 CodeMirror 6
+            initCodeMirror6(currentCode);
             if (ext === 'md' || ext === 'markdown') {
                 viewToggles.classList.remove('d-none');
             }
         }
 
-        // 🌟 新增：處理字體放大縮小
-        let currentFontSize = 15;
-        window.changeFontSize = function(delta) {
-            if (delta === 0) {
-                currentFontSize = 15; // 恢復預設
-            } else {
-                currentFontSize += delta * 2; // 每次增減 2px
-            }
-            // 設定極限值防呆
-            if (currentFontSize < 10) currentFontSize = 10;
-            if (currentFontSize > 36) currentFontSize = 36;
+        // --- 1. CodeMirror 6 初始化引擎 ---
+        function initCodeMirror6(codeText) {
+            cm6View = new EditorView({
+                state: EditorState.create({
+                    doc: codeText,
+                    extensions: [
+                        basicSetup,
+                        EditorView.lineWrapping,
+                        getCM6Language(ext),
+                        oneDark
+                    ]
+                }),
+                parent: editorContainer
+            });
+            // 套用目前字體大小
+            applyFontSizeToDOM();
+        }
 
-            const cmElement = document.querySelector('.CodeMirror');
-            if (cmElement) {
-                cmElement.style.fontSize = currentFontSize + 'px';
-                if (editor) editor.refresh(); // 讓編輯器重新計算行高游標
+        // --- 2. Monaco 初始化引擎 ---
+        function initMonaco(codeText) {
+            // 配置 Monaco 的 CDN 載入路徑
+            require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
+            require(['vs/editor/editor.main'], function () {
+                // 建立一個專屬於 Monaco 的內層 wrapper 容器
+                const innerPane = document.createElement('div');
+                innerPane.id = 'monaco-pane';
+                innerPane.className = 'monaco-pane-wrapper';
+                editorContainer.appendChild(innerPane);
+
+                monacoInstance = monaco.editor.create(innerPane, {
+                    value: codeText,
+                    language: getMonacoLanguage(ext),
+                    theme: 'vs-dark',
+                    fontSize: currentFontSize,
+                    fontFamily: "'Consolas', 'Courier New', monospace",
+                    automaticLayout: true,
+                    wordWrap: "on"
+                });
+            });
+        }
+
+        // --- 3. 跨引擎動態熱插拔切換邏輯 ---
+        window.switchEngine = function(targetEngine) {
+            if (currentEngine === targetEngine) return;
+
+            // Step A: 提取當前運作中編輯器的最新原始碼內容
+            if (currentEngine === 'codemirror' && cm6View) {
+                currentCode = cmViewGetCode();
+                cm6View.destroy(); // 釋放快取，摧毀實例
+                cm6View = null;
+            } else if (currentEngine === 'monaco' && monacoInstance) {
+                currentCode = monacoInstance.getValue();
+                monacoInstance.dispose(); // 釋放線程，摧毀實例
+                monacoInstance = null;
+            }
+
+            // Step B: 清空主容器，切換狀態
+            editorContainer.innerHTML = '';
+            currentEngine = targetEngine;
+
+            // Step C: 初始化目標編輯器
+            if (targetEngine === 'codemirror') {
+                initCodeMirror6(currentCode);
+            } else if (targetEngine === 'monaco') {
+                initMonaco(currentCode);
             }
         };
 
-        function getMode(extension) {
-            const modes = { 'py': 'python', 'js': 'javascript', 'html': 'xml', 'css': 'css', 'md': 'markdown', 'json': 'javascript', 'xml': 'xml' };
-            return modes[extension] || 'text/plain';
+        // 輔助函式：安全提取 CM6 的內容
+        function cmViewGetCode() {
+            return cm6View ? cm6View.state.doc.toString() : '';
         }
 
+        // 輔助函式：獲取當前活躍中的最新代碼
+        function getActiveCode() {
+            if (currentEngine === 'codemirror' && cm6View) {
+                return cmViewGetCode();
+            } else if (currentEngine === 'monaco' && monacoInstance) {
+                return monacoInstance.getValue();
+            }
+            return currentCode;
+        }
+
+        // --- 4. 字體放大縮小控制邏輯 ---
+        window.changeFontSize = function(delta) {
+            if (delta === 0) {
+                currentFontSize = 15;
+            } else {
+                currentFontSize += delta * 2;
+            }
+            if (currentFontSize < 10) currentFontSize = 10;
+            if (currentFontSize > 36) currentFontSize = 36;
+
+            if (currentEngine === 'codemirror') {
+                applyFontSizeToDOM();
+            } else if (currentEngine === 'monaco' && monacoInstance) {
+                monacoInstance.updateOptions({ fontSize: currentFontSize });
+            }
+        };
+
+        function applyFontSizeToDOM() {
+            const cmElement = document.querySelector('.cm-editor');
+            if (cmElement) {
+                cmElement.style.fontSize = currentFontSize + 'px';
+                if (cm6View) cm6View.requestMeasure(); // 迫使 CM6 重新計算行高游標
+            }
+        }
+
+        // --- 5. 語法高亮對照字典 (CM6 🆚 Monaco) ---
+        function getCM6Language(extension) {
+            const mapping = {
+                'py': python(), 'js': javascript(), 'json': json(),
+                'html': html(), 'xml': html(), 'css': css(),
+                'md': markdown(), 'markdown': markdown()
+            };
+            return mapping[extension] || [];
+        }
+
+        function getMonacoLanguage(extension) {
+            const mapping = {
+                'py': 'python', 'js': 'javascript', 'json': 'json',
+                'html': 'html', 'xml': 'xml', 'css': 'css',
+                'md': 'markdown', 'markdown': 'markdown'
+            };
+            return mapping[extension] || 'plaintext';
+        }
+
+        // --- 6. 視窗檢視切換 (編輯 🆚 預覽) ---
         window.toggleView = function(view) {
             if (view === 'edit') {
                 editorContainer.classList.remove('d-none');
-                fontControls.classList.remove('d-none'); // 顯示字體按鈕
+                fontControls.classList.remove('d-none');
+                engineToggles.classList.remove('d-none');
                 previewContainer.classList.add('d-none');
                 actionBar.classList.remove('d-none');
-                setTimeout(() => editor.refresh(), 10);
             } else if (view === 'preview') {
+                const markdownText = getActiveCode();
                 editorContainer.classList.add('d-none');
-                fontControls.classList.add('d-none'); // 隱藏字體按鈕
+                fontControls.classList.add('d-none');
+                engineToggles.classList.add('d-none');
                 previewContainer.classList.remove('d-none');
                 actionBar.classList.add('d-none');
-                const markdownText = editor.getValue();
                 document.getElementById('preview-pane').innerHTML = marked.parse(markdownText);
             }
-        }
+        };
         
-        function combineMessage(event) {
-            let title = document.getElementById('commit_title').value.trim() || "Update {{ file_path }}";
+        // --- 7. 表單提交前統整資料 ---
+        window.combineMessage = function(event) {
+            // A. 將當前正在編輯的代碼，指派給隱藏的 content 欄位傳回後端
+            document.getElementById('hidden_content').value = getActiveCode();
+
+            // B. 合併處理 Commit 說明訊息
+            let title = document.getElementById('commit_title').value.trim() || `Update ${filePath}`;
             let body = document.getElementById('commit_body').value.trim();
             document.getElementById('real_message').value = body ? (title + "\n\n" + body) : title;
-        }
+        };
     </script>
 </body>
 </html>

@@ -1,7 +1,7 @@
  <!DOCTYPE html>
 <html>
 <head>
-    <title>{{ repo_name }} - GitLocal</title>
+    <title>{{ repo_name }} - GitLocal-Python</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 	
@@ -285,6 +285,15 @@
 	// 🌟 核心修改 1：網頁載入時，優先從 sessionStorage 讀取上次停留的資料夾
 	const storageKey = `currentDir_${repoName}`;
 	let currentDir = sessionStorage.getItem(storageKey) || ""; 
+	
+	// 🌟 修正：判斷來源網址 (document.referrer)
+	// 如果使用者不是從「當前倉庫內部頁面」（例如線上編輯檔案、看 Commit 後返回）過來的，
+	// 而是從「首頁」重新點進來，或者直接輸入網址，就強制清空記憶，回到資料夾首頁（根目錄）！
+	if (!document.referrer.includes(`/repo/${repoName}`)) {
+		currentDir = "";
+		sessionStorage.removeItem(storageKey);
+	}
+
 	let stagedFiles = [];
 	
     // 🌟 新增：接收後端傳來的分支資料
@@ -706,8 +715,8 @@
 			readmeHeader.innerHTML = headerTitle;
 			readmeContent.innerHTML = '<span class="text-muted">載入說明文件中...</span>';
 			
-			// 呼叫 API 載入對應路徑的內容
-			fetch(`/repo/${repoName}/raw/${readmeFileToLoad.path}`)
+			// 呼叫 API 載入對應路徑的內容 (加上時間戳破解瀏覽器快取)
+			fetch(`/repo/${repoName}/raw/${readmeFileToLoad.path}?t=${new Date().getTime()}`)
 				.then(response => response.text())
 				.then(text => {
 					readmeContent.innerHTML = marked.parse(text);
