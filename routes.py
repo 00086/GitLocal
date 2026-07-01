@@ -301,3 +301,18 @@ def delete_release(repo_name, tag_name):
         except Exception as e:
             return f"刪除發布失敗: {e}", 500
     return redirect(url_for('web_ui.repo_detail', repo_name=repo_name))
+    
+# --- 🌟 新增：編輯特定 Release ---
+@web_ui.route('/repo/<repo_name>/release/edit/<tag_name>', methods=['POST'])
+def edit_release(repo_name, tag_name):
+    message = request.form.get('message', '')
+    uploaded_files = request.files.getlist('assets')
+
+    if tag_name:
+        try:
+            db.edit_release(repo_name, tag_name, message, uploaded_files)
+        except Exception as e:
+            return f"編輯發布失敗: {e}", 500
+            
+    return redirect(url_for('web_ui.repo_detail', repo_name=repo_name))
+    

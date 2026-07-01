@@ -793,3 +793,47 @@ def delete_release(repo_name, tag_name):
         if os.path.exists(release_dir):
             shutil.rmtree(release_dir)
             
+def edit_release(repo_name, tag_name, new_message, uploaded_files):
+    """編輯 Release (覆寫 Git 附註標籤的說明 + 新增/覆蓋手動上傳的檔案)"""
+    with git_lock:
+        repo_dir = get_repo_path(repo_name)
+        repo = Repo(repo_dir)
+
+        tag_ref = f"refs/tags/{tag_name}".encode('utf-8')
+        if tag_ref not in repo.refs:
+            raise ValueError(f"找不到標籤 {tag_name}")
+
+        # 取得舊標籤的 SHA 與物件
+        old_sha = repo.refs[tag_ref]
+        old_obj = repo[old_sha]
+
+        # 判斷舊標籤指向的目標 Commit
+        if isinstance(old_obj, Tag):
+            target_sha = old_obj.object[1] if isinstance(old_obj.object, tuple) else old_obj.object
+        else:
+            target_sha = old_sha  # 相容舊的輕量級標籤
+
+        # 🌟 Git 物件不可變，所以我們必須建立一個「全新的附註標籤」來覆蓋它
+        new_tag = Tag()
+        new_tag.tagger = b"Web User <web@local.git>"
+        new_tag.tag_time = int(time.time())
+        new_tag.tag_timezone = 0
+        new_tag.name = tag_name.encode('utf-8')
+        new_tag.object = (Commit, target_sha)  # 指向同一個 Commit
+        
+        # 寫入新的發布說明
+        safe_msg = new_message.strip() if new_message.strip() else f"Release {tag_name}"
+        new_tag.message = safe_msg.encode('utf-8')
+
+        # 將新標籤存入物件庫，並「覆蓋」原本的 Reference 指標
+        repo.object_store.add_object(new_tag)
+        repo.refs[tag_ref] = new_tag.id
+
+        # 處理手動上傳的新檔案 (會新增或直接覆蓋同名檔案)
+        release_dir = os.path.join(repo_dir, ".gitlocal", "releases", tag_name)
+        os.makedirs(release_dir, exist_ok=True)
+
+        for f in uploaded_files:
+            if f.filename:
+                asset_path = os.path.join(release_dir, f.filename)
+                f.save(asset_path)
