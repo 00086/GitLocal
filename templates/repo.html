@@ -221,7 +221,8 @@
                 </div>
             </div>
         </div>
-    </div> <div id="releaseModal" style="display:none; position:fixed; z-index:1060; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); justify-content:center; align-items:center;">
+    </div> 
+	<div id="releaseModal" style="display:none; position:fixed; z-index:1060; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); justify-content:center; align-items:center;">
         <div style="background:var(--bs-body-bg); color:var(--bs-body-color); width:90%; max-width:550px; border-radius:0.5rem; display:flex; flex-direction:column; box-shadow:0 1rem 3rem rgba(0,0,0,0.175);">
             <div style="padding:15px; border-bottom:1px solid var(--bs-border-color); display:flex; justify-content:space-between; align-items:center;">
                 <strong class="fs-5 text-success">📦 建立新發布 (Create Release)</strong>
@@ -249,6 +250,37 @@
             </form>
         </div>
         
+    </div>
+	
+	<div id="editReleaseModal" style="display:none; position:fixed; z-index:1060; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); justify-content:center; align-items:center;">
+        <div style="background:var(--bs-body-bg); color:var(--bs-body-color); width:90%; max-width:550px; border-radius:0.5rem; display:flex; flex-direction:column; box-shadow:0 1rem 3rem rgba(0,0,0,0.175);">
+            <div style="padding:15px; border-bottom:1px solid var(--bs-border-color); display:flex; justify-content:space-between; align-items:center;">
+                <strong class="fs-5 text-primary">✏️ 編輯發布 (Edit Release)</strong>
+                <button class="btn-close" onclick="closeEditReleaseModal()" style="filter: var(--bs-btn-close-filter);"></button>
+            </div>
+            <form id="edit-release-form" style="padding:20px; margin:0;">
+                <div class="mb-3">
+                    <label class="form-label fw-bold">版本標籤 (Tag Name)</label>
+                    <div id="edit-tag-name-display" class="form-control bg-light fw-bold text-secondary"></div>
+                    <input type="hidden" name="tag_name" id="edit-tag-name-input">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label fw-bold">發布說明 (Release Notes)</label>
+                    <textarea name="message" id="edit-message-input" class="form-control" rows="5" placeholder="修改發布說明..."></textarea>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label fw-bold text-primary">📦 附加新檔案 (Assets)</label>
+                    <div id="edit-release-drop-zone" class="border rounded p-4 text-center" style="border: 2px dashed #0d6efd !important; cursor: pointer; background-color: #f8f9fa;">
+                        <span class="fs-4">📥</span>
+                        <p class="mb-0 text-secondary fw-bold mt-2">將新檔案拖曳至此，或點擊選擇</p>
+                        <small class="text-muted">(同名檔案將會被覆蓋更新)</small>
+                        <input type="file" id="edit-release-file-input" name="assets" class="d-none" multiple>
+                    </div>
+                    <ul id="edit-release-file-list" class="list-group mt-2 d-none"></ul>
+                </div>
+                <button type="submit" id="edit-release-submit-btn" class="btn btn-primary w-100 fw-bold fs-5 mt-2">💾 儲存修改</button>
+            </form>
+        </div>
     </div>
 	
 	<div id="commitModal" style="display:none; position:fixed; z-index:1050; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); justify-content:center; align-items:center;">
@@ -1241,6 +1273,12 @@
 		const container = document.getElementById('release-list');
 		if (!container) return;
 		container.innerHTML = '';
+		
+		// 🌟 核心修正：強制開啟 Markdown 的 GitHub 風格換行 (breaks: true)
+        marked.setOptions({
+            breaks: true,
+            gfm: true
+        });
 
 		if (!releases || releases.length === 0) {
 			container.innerHTML = `
@@ -1290,6 +1328,7 @@
 								<div class="fw-bold">發布時間: ${r.time}</div>
 								<div>Commit: <a href="javascript:void(0);" onclick="openCommitModal('${r.commit_sha}')" class="font-monospace text-decoration-none">${r.commit_sha.substring(0,7)}</a></div>
 							</div>
+							<button class="btn btn-sm btn-outline-primary fw-bold px-2 py-1 shadow-sm" onclick="openEditReleaseModal('${r.tag_name}')" title="修改說明與增加檔案">✏️ 編輯</button>
 							<button class="btn btn-sm btn-outline-danger fw-bold px-2 py-1 shadow-sm" onclick="deleteReleasePrompt('${r.tag_name}')" title="永久刪除此版本與所有資產">🗑️ 刪除</button>
 						</div>
 					</div>
@@ -1453,6 +1492,108 @@
 			form.submit();
 		}
 	};
+
+	// =========================================================================
+	// 🌟 新增：編輯 Release 的介面控制邏輯
+	// =========================================================================
+	let editReleaseAssets = [];
+	const editReleaseDropZone = document.getElementById('edit-release-drop-zone');
+	const editReleaseFileInput = document.getElementById('edit-release-file-input');
+	const editReleaseFileList = document.getElementById('edit-release-file-list');
+	const editReleaseForm = document.getElementById('edit-release-form');
+
+	function openEditReleaseModal(tagName) {
+		const r = releases.find(x => x.tag_name === tagName);
+		if (!r) return;
+		
+		document.getElementById('edit-tag-name-display').innerText = tagName;
+		document.getElementById('edit-tag-name-input').value = tagName;
+		document.getElementById('edit-message-input').value = r.message === '無發布說明 (輕量級標籤)' ? '' : r.message;
+		
+		document.getElementById('editReleaseModal').style.display = 'flex';
+		editReleaseAssets = [];
+		renderEditReleaseFileList();
+	}
+
+	function closeEditReleaseModal() {
+		document.getElementById('editReleaseModal').style.display = 'none';
+		editReleaseAssets = [];
+	}
+
+	document.getElementById('editReleaseModal').addEventListener('click', function(e) { 
+		if (e.target === this) closeEditReleaseModal(); 
+	});
+
+	// 編輯區的拖曳邏輯
+	if (editReleaseDropZone) {
+		editReleaseDropZone.addEventListener('click', () => editReleaseFileInput.click());
+		editReleaseDropZone.addEventListener('dragover', (e) => { e.preventDefault(); editReleaseDropZone.classList.add('bg-body-secondary'); });
+		editReleaseDropZone.addEventListener('dragleave', (e) => { e.preventDefault(); editReleaseDropZone.classList.remove('bg-body-secondary'); });
+		editReleaseDropZone.addEventListener('drop', (e) => {
+			e.preventDefault();
+			editReleaseDropZone.classList.remove('bg-body-secondary');
+			for (let i = 0; i < e.dataTransfer.files.length; i++) {
+				if (!editReleaseAssets.some(f => f.name === e.dataTransfer.files[i].name)) editReleaseAssets.push(e.dataTransfer.files[i]);
+			}
+			renderEditReleaseFileList();
+		});
+		editReleaseFileInput.addEventListener('change', (e) => {
+			for (let i = 0; i < e.target.files.length; i++) {
+				if (!editReleaseAssets.some(f => f.name === e.target.files[i].name)) editReleaseAssets.push(e.target.files[i]);
+			}
+			editReleaseFileInput.value = '';
+			renderEditReleaseFileList();
+		});
+	}
+
+	function renderEditReleaseFileList() {
+		editReleaseFileList.innerHTML = '';
+		if (editReleaseAssets.length === 0) {
+			editReleaseFileList.classList.add('d-none');
+			return;
+		}
+		editReleaseFileList.classList.remove('d-none');
+		editReleaseAssets.forEach((file, index) => {
+			let sizeStr = (file.size / 1024 / 1024).toFixed(2) + ' MB';
+			if (file.size < 1024 * 1024) sizeStr = (file.size / 1024).toFixed(2) + ' KB';
+			editReleaseFileList.innerHTML += `
+				<li class="list-group-item d-flex justify-content-between align-items-center py-1 px-2 bg-body-tertiary">
+					<div class="text-truncate fw-bold text-secondary" style="max-width: 85%; font-size: 0.95rem;">📄 ${file.name} <span class="badge bg-secondary ms-2">${sizeStr}</span></div>
+					<button type="button" class="btn btn-sm btn-link text-danger text-decoration-none py-0 px-2 fw-bold" onclick="event.stopPropagation(); editReleaseAssets.splice(${index}, 1); renderEditReleaseFileList();">&times;</button>
+				</li>`;
+		});
+	}
+
+	// 編輯表單送出
+	if (editReleaseForm) {
+		editReleaseForm.addEventListener('submit', async function(e) {
+			e.preventDefault();
+			const tagName = document.getElementById('edit-tag-name-input').value;
+			const message = document.getElementById('edit-message-input').value;
+			const btn = document.getElementById('edit-release-submit-btn');
+
+			btn.disabled = true;
+			btn.innerText = "⏳ 儲存並上傳中...";
+
+			const formData = new FormData();
+			formData.append('message', message);
+			editReleaseAssets.forEach(file => formData.append('assets', file));
+
+			try {
+				const response = await fetch(`/repo/${repoName}/release/edit/${tagName}`, { method: 'POST', body: formData });
+				if (response.ok) location.reload();
+				else {
+					alert(`❌ 編輯失敗: ${await response.text()}`);
+					btn.disabled = false;
+					btn.innerText = "💾 儲存修改";
+				}
+			} catch (err) {
+				alert(`❌ 系統錯誤: ${err}`);
+				btn.disabled = false;
+				btn.innerText = "💾 儲存修改";
+			}
+		});
+	}
 
 	function renderCommits() {
 		const tbody = document.getElementById('commit-table-body');
