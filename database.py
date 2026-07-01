@@ -10,7 +10,7 @@ from dulwich import porcelain
 from dulwich.diff_tree import tree_changes
 import zipfile
 import shutil
-from dulwich.objects import Commit
+from dulwich.objects import Commit, Tag
 import hashlib
 import fnmatch  # 🌟 新增：用於解析 .gitignore 語法
 
@@ -675,3 +675,121 @@ def get_repo_manifest(repo_name):
             
     return manifest
     
+# ==========================================
+# 🌟 Releases 發布與金庫管理 API
+# ==========================================
+def create_release(repo_name, tag_name, message, uploaded_files):
+    """建立 Release (打附註標籤 + 封存手動上傳的檔案 + 打包源碼)"""
+    with git_lock:
+        repo_dir = get_repo_path(repo_name)
+        repo = Repo(repo_dir)
+
+        head_sha = repo.head()
+
+        # 1. 🌟 升級為建立 Git 附註標籤 (Annotated Tag)
+        tag_obj = Tag()
+        tag_obj.tagger = b"Web User <web@local.git>"
+        tag_obj.tag_time = int(time.time())
+        tag_obj.tag_timezone = 0
+        tag_obj.name = tag_name.encode('utf-8')
+        
+        # 💡 終極修正：Dulwich 的 Tuple 順序嚴格要求為 (類別, SHA位元組)
+        tag_obj.object = (Commit, head_sha)
+        
+        # 確保 message 不是空的，避免 Git 底層報錯
+        safe_msg = message.strip() if message.strip() else f"Release {tag_name}"
+        tag_obj.message = safe_msg.encode('utf-8')
+
+        # 寫入 Git 物件庫，並更新參照
+        repo.object_store.add_object(tag_obj)
+        tag_ref = f"refs/tags/{tag_name}".encode('utf-8')
+        repo.refs[tag_ref] = tag_obj.id
+
+        # 2. 建立本地發布專屬金庫資料夾
+        release_dir = os.path.join(repo_dir, ".gitlocal", "releases", tag_name)
+        os.makedirs(release_dir, exist_ok=True)
+
+        # 3. 自動打包當下 Commit 的原始碼成 ZIP
+        zip_buffer = get_commit_zip(repo_name, head_sha.decode('utf-8'))
+        if zip_buffer:
+            source_zip_path = os.path.join(release_dir, f"{repo_name}_{tag_name}_source.zip")
+            with open(source_zip_path, 'wb') as f:
+                f.write(zip_buffer.getvalue())
+
+        # 4. 處理手動上傳的發布檔案 (Assets)
+        for f in uploaded_files:
+            if f.filename:
+                asset_path = os.path.join(release_dir, f.filename)
+                f.save(asset_path)
+
+def get_releases_list(repo_name):
+    """獲取歷史發布清單"""
+    repo_dir = get_repo_path(repo_name)
+    repo = Repo(repo_dir)
+    releases = []
+
+    for ref in repo.refs.keys():
+        if ref.startswith(b'refs/tags/'):
+            tag_name = ref.decode('utf-8').replace('refs/tags/', '')
+            sha = repo.refs[ref]
+            
+            try:
+                obj = repo[sha]
+                
+                if isinstance(obj, Tag):
+                    msg = _clean_message(obj.message)
+                    time_str = datetime.datetime.fromtimestamp(obj.tag_time).strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    # 🌟 致命錯誤修正：Dulwich 的 obj.object 是一個 Tuple (類別, SHA)，所以 SHA 在索引 1！
+                    target_sha = obj.object[1] if isinstance(obj.object, tuple) else obj.object
+                    sha_str = target_sha.decode('utf-8')
+                else:
+                    # 相容舊的輕量級標籤
+                    msg = "無發布說明 (輕量級標籤)"
+                    time_str = datetime.datetime.fromtimestamp(obj.commit_time).strftime('%Y-%m-%d %H:%M:%S')
+                    sha_str = obj.id.decode('utf-8')
+            except Exception as e:
+                print(f"⚠️ 解析標籤 {tag_name} 失敗: {e}")
+                msg = ""
+                time_str = ""
+                sha_str = ""
+
+            # 掃描金庫內的 Assets 檔案清單
+            assets = []
+            release_dir = os.path.join(repo_dir, ".gitlocal", "releases", tag_name)
+            if os.path.exists(release_dir):
+                for entry in os.scandir(release_dir):
+                    if entry.is_file():
+                        assets.append({
+                            "name": entry.name,
+                            "size": entry.stat().st_size,
+                            "path": f"{tag_name}/{entry.name}"
+                        })
+
+            releases.append({
+                "tag_name": tag_name,
+                "message": msg,
+                "time": time_str,
+                "commit_sha": sha_str,
+                "assets": assets
+            })
+
+    # 反轉陣列，最新在上
+    return sorted(releases, key=lambda x: x['time'], reverse=True)
+
+def delete_release(repo_name, tag_name):
+    """刪除 Release (解開 Git Tag + 徹底抹除金庫檔案)"""
+    with git_lock:
+        repo_dir = get_repo_path(repo_name)
+        repo = Repo(repo_dir)
+
+        # 1. 移除 Git Tag 參照
+        tag_ref = f"refs/tags/{tag_name}".encode('utf-8')
+        if tag_ref in repo.refs:
+            del repo.refs[tag_ref]
+
+        # 2. 徹底摧毀本地發布金庫資料夾
+        release_dir = os.path.join(repo_dir, ".gitlocal", "releases", tag_name)
+        if os.path.exists(release_dir):
+            shutil.rmtree(release_dir)
+            

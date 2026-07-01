@@ -23,12 +23,17 @@ def repo_detail(repo_name):
     details = db.get_repo_details(repo_name)
     if details is None:
         abort(404)
+        
+    # 🌟 讀取 Releases 金庫資料
+    releases = db.get_releases_list(repo_name)
+        
     return render_template('repo.html', 
                            repo_name=repo_name, 
                            commits=details["commits"], 
-                           graph_commits=details.get("graph_commits", []), # 🌟 新增這行傳遞全域資料
+                           graph_commits=details.get("graph_commits", []), 
                            files=details["files"],
-                           branches=details.get("branches", {}))
+                           branches=details.get("branches", {}),
+                           releases=releases) # 🌟 新增這行
 
 # --- 🌟 讀取與修改：檔案編輯器介面 ---
 @web_ui.route('/repo/<repo_name>/file/<path:file_path>', methods=['GET', 'POST'])
@@ -264,3 +269,35 @@ def api_manifest(repo_name):
     manifest = db.get_repo_manifest(repo_name)
     return jsonify(manifest)
     
+# ==========================================
+# 🌟 Releases 發布中心專屬 API
+# ==========================================
+@web_ui.route('/repo/<repo_name>/release/create', methods=['POST'])
+def create_release(repo_name):
+    tag_name = request.form.get('tag_name')
+    message = request.form.get('message', '')
+    uploaded_files = request.files.getlist('assets') # 接收多檔案
+
+    if tag_name:
+        try:
+            db.create_release(repo_name, tag_name, message, uploaded_files)
+        except Exception as e:
+            return f"建立發布失敗: {e}", 500
+            
+    return redirect(url_for('web_ui.repo_detail', repo_name=repo_name))
+
+@web_ui.route('/repo/<repo_name>/release/download/<tag_name>/<path:file_name>')
+def download_release_asset(repo_name, tag_name, file_name):
+    target_path = os.path.join(db.get_repo_path(repo_name), ".gitlocal", "releases", tag_name, file_name)
+    if not os.path.exists(target_path):
+        abort(404, "找不到該發布檔案")
+    return send_file(target_path, as_attachment=True)
+
+@web_ui.route('/repo/<repo_name>/release/delete/<tag_name>', methods=['POST'])
+def delete_release(repo_name, tag_name):
+    if tag_name:
+        try:
+            db.delete_release(repo_name, tag_name)
+        except Exception as e:
+            return f"刪除發布失敗: {e}", 500
+    return redirect(url_for('web_ui.repo_detail', repo_name=repo_name))
